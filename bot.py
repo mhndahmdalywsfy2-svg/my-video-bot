@@ -1,109 +1,191 @@
 import asyncio
 import os
+import glob
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
+from aiogram.types import (
+    Message,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    FSInputFile,
+    InputMediaPhoto,
+    InputMediaVideo
+)
 from aiogram.filters import CommandStart
-from aiogram.exceptions import TelegramBadRequest
 import yt_dlp
 
-# قراءة التوكن من إعدادات Render
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-CHANNEL_USERNAME = "@ulxath"
-CHANNEL_LINK = "https://t.me/ulxath"
+# قراءة التوكن من إعدادات البيئة (Render)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+# معرف ورابط قناتك للاشتراك الإجباري
+CHANNEL_USERNAME = "@your_channel"
+CHANNEL_LINK = "https://t.me/your_channel"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# دالة التحقق من الاشتراك الإجباري
-async def check_subscription(user_id: int) -> bool:
+# دالة التحقق من الاشتراك الإجباري في القناة
+async def check_subscription(user_id: int):
     try:
-        member = await bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user_id)
-        return member.status in ['member', 'administrator', 'creator']
-    except Exception as e:
-        print(f"Subscription check error: {e}")
+        member = await bot.get_chat_member(
+            chat_id=CHANNEL_USERNAME,
+            user_id=user_id
+        )
+        return member.status in [
+            "member",
+            "administrator",
+            "creator"
+        ]
+    except Exception:
         return False
 
-# لوحة مفاتيح الاشتراك الإجباري
-def get_subscribe_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔔 اشترك في القناة أولاً", url=CHANNEL_LINK)]
-    ])
+# لوحة مفاتيح الاشتراك الإجباري باللغة العربية
+def subscribe_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📢 اشترك في القناة لتفعيل البوت",
+                    url=CHANNEL_LINK
+                )
+            ]
+        ]
+    )
 
-# الاستجابة لأمر /start
+# رسالة الترحيب /start باللغة العربية
 @dp.message(CommandStart())
-async def start_cmd(message: Message):
-    try:
-        is_subscribed = await check_subscription(message.from_user.id)
-        if is_subscribed:
-            await message.answer("أهلاً بك! 👋\nأرسل لي رابط فيديو من منصات التواصل وسأقوم بتحميله بدون علامة مائية.")
-        else:
-            await message.answer(
-                "عذراً، يجب عليك الاشتراك في القناة المخصصة أولاً لاستخدام البوت.",
-                reply_markup=get_subscribe_keyboard()
-            )
-    except Exception as e:
-        print(f"Start command error: {e}")
-
-# الاستجابة للروابط والتحميل الآمن
-@dp.message(F.text.regexp(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'))
-async def download_video(message: Message):
-    user_id = message.from_user.id
-    
-    # التحقق من الاشتراك قبل البدء
-    if not await check_subscription(user_id):
+async def start(message: Message):
+    if not await check_subscription(message.from_user.id):
         await message.answer(
-            "عذراً، يجب عليك الاشتراك في القناة المخصصة أولاً لاستخدام البوت.",
-            reply_markup=get_subscribe_keyboard()
+            "عذراً، يجب عليك الاشتراك في القناة أولاً لاستخدام البوت المطور. 👇",
+            reply_markup=subscribe_keyboard()
         )
         return
 
-    url = message.text
-    status_msg = await message.answer("⏳ جاري معالجة الرابط وتحميل الفيديو، يرجى الانتظار...")
+    await message.answer(
+        "مرحباً بك! 👋\n"
+        "أرسل لي الآن رابط فيديو أو صور من (TikTok , Instagram , Facebook , YouTube) "
+        "وسأقوم بتحميل المحتوى لك بأعلى جودة وبدون علامة مائية تلقائياً. ⚡"
+    )
 
-    # اسم ملف فريد لكل مستخدم لتجنب التداخل وضياع الملفات
-    output_filename = f"video_{user_id}.mp4"
-    
-    # إعدادات متوازنة لـ yt-dlp لحماية الذاكرة (RAM) في السيرفر المجاني
-    ydl_opts = {
-        'format': 'best[ext=mp4]/best', # اختيار صيغة MP4 مباشرة لتقليل استهلاك المعالج في الدمج
-        'outtmpl': output_filename,
-        'quiet': True,
-        'no_warnings': True,
-    }
+# استقبال الروابط وتحميلها بشكل ذكي وشامل (فيديوهات وصور)
+@dp.message(F.text.startswith(("http://", "https://")))
+async def download(message: Message):
+    user_id = message.from_user.id
+
+    if not await check_subscription(user_id):
+        await message.answer(
+            "عذراً، يجب عليك الاشتراك في القناة أولاً لاستخدام البوت المطور. 👇",
+            reply_markup=subscribe_keyboard()
+        )
+        return
+
+    # رسالة الحالة أثناء المعالجة
+    status = await message.answer(
+        "⏳ جاري فحص الرابط ومعالجة المحتوى بدون علامة مائية، يرجى الانتظار..."
+    )
+
+    # إنشاء مجلد مؤقت فريد لكل مستخدم لمنع تداخل الملفات
+    user_dir = f"downloads_{user_id}"
+    os.makedirs(user_dir, exist_ok=True)
 
     try:
-        # تشغيل التحميل بشكل منفصل لتجنب تعليق البوت
-        loop = asyncio.get_event_loop()
-        def run_dl():
+        url = message.text
+
+        # إعدادات متطورة لـ yt-dlp لدعم الصور والفيديوهات وحماية الذاكرة العشوائية
+        ydl_opts = {
+            # حفظ الملفات بأسماء معرفة ومناسبة للامتدادات
+            "outtmpl": f"{user_dir}/%(id)s_%(title)s.%(ext)s", 
+            "quiet": True,
+            "no_warnings": True,
+            # اختيار أفضل جودة مدمجة مباشرة لتقليل استهلاك المعالج
+            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            # السماح بجلب امتدادات الصور المختلفة وألبومات التيك توك والانستا
+            "allowed_extensions": ["mp4", "mkv", "mov", "webm", "jpg", "jpeg", "png", "webp"],
+        }
+
+        def run_download():
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
-        
-        await loop.run_in_executor(None, run_dl)
 
-        # التأكد من أن الملف تم تحميله بنجاح قبل إرساله
-        if os.path.exists(output_filename):
-            video_file = FSInputFile(output_filename)
-            await message.answer_video(video=video_file, caption="✅ تم التحميل بنجاح!\n@ulxath")
-            await status_msg.delete()
+        # تشغيل التحميل في خيط منفصل (Executor) لضمان عدم توقف البوت أو تجمده
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            run_download
+        )
+
+        # جلب كافة الملفات التي تم تحميلها في مجلد المستخدم
+        files = glob.glob(f"{user_dir}/*")
+
+        if not files:
+            await status.edit_text(
+                "❌ عذراً، لم نتمكن من استخراج أو العثور على أي محتوى من هذا الرابط. تأكد من أن الحساب/المنشور عام."
+            )
+            return
+
+        # تصنيف الملفات المكتشفة إلى صور وفيديوهات
+        photos_list = []
+        videos_list = []
+        
+        for file_path in files:
+            if file_path.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+                photos_list.append(file_path)
+            elif file_path.lower().endswith((".mp4", ".mkv", ".mov", ".webm")):
+                videos_list.append(file_path)
+
+        # 1. إذا كان المحتوى المكتشف عبارة عن صور (ألبوم صور تيك توك أو إنستغرام)
+        if photos_list and not videos_list:
+            media_group = []
+            # تليجرام يدعم إرسال 10 صور كحد أقصى في رسالة المجموعة الواحدة
+            for i, photo in enumerate(photos_list[:10]):
+                caption = "✅ تم تحميل ألبوم الصور بنجاح بدون علامة مائية." if i == 0 else ""
+                media_group.append(InputMediaPhoto(media=FSInputFile(photo), caption=caption))
+            
+            await message.answer_media_group(media=media_group)
+            await status.delete()
+
+        # 2. إذا كان المحتوى المكتشف عبارة عن فيديو (أو عدة فيديوهات)
+        elif videos_list:
+            # إرسال الفيديو الأول المكتشف
+            file_path = videos_list[0]
+            await message.answer_video(
+                video=FSInputFile(file_path),
+                caption="✅ تم تحميل الفيديو بنجاح بأعلى جودة وبدون علامة مائية."
+            )
+            await status.delete()
+
+        # 3. أي صيغ أخرى غير مباشرة يتم إرسالها كملف وثيقة
         else:
-            await status_msg.edit_text("❌ لم نتمكن من العثور على ملف الفيديو، قد يكون الرابط غير مدعوم.")
+            file_path = files[0]
+            await message.answer_document(
+                document=FSInputFile(file_path),
+                caption="✅ تم تحميل الملف."
+            )
+            await status.delete()
 
     except Exception as e:
-        print(f"Download error: {e}")
-        await status_msg.edit_text("❌ حدث خطأ غير متوقع أثناء معالجة هذا الرابط. تأكد من أنه عام وصحيح.")
-    
-    finally:
-        # كود حرج: تنظيف السيرفر وحذف الملف فوراً مهما حدث (سواء نجح التحميل أو فشل)
-        if os.path.exists(output_filename):
-            try:
-                os.remove(output_filename)
-            except Exception as e:
-                print(f"File removal error: {e}")
+        print(f"حدث خطأ أثناء التشغيل: {e}")
+        await status.edit_text(
+            "❌ حدث خطأ غير متوقع أثناء معالجة الرابط. يرجى التحقق من صحة الرابط والمحاولة مجدداً."
+        )
 
-# تشغيل البوت
+    finally:
+        # كود حماية السيرفر: تنظيف وحذف كافة الملفات والمجلدات المؤقتة فوراً مهما كانت النتيجة
+        try:
+            files = glob.glob(f"{user_dir}/*")
+            for f in files:
+                os.remove(f)
+
+            if os.path.exists(user_dir):
+                os.rmdir(user_dir)
+        except Exception as cleanup_error:
+            print(f"خطأ أثناء تنظيف الملفات: {cleanup_error}")
+
+
 async def main():
-    print("Bot is running securely...")
+    print("البوت المطور يعمل الآن باللغة العربية ودعم الصور والفيديوهات...")
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
